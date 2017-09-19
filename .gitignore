@@ -91,3 +91,5 @@ ENV/
 .ropeproject
 .Rproj.user
 *.csv
+*.labels
+*.zip

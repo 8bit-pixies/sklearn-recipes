@@ -68,6 +68,7 @@ dependencies:
 - widgetsnbextension=3.0.2=py36_0
 - wincertstore=0.2=py36_0
 - zlib=1.2.11=vc14_0
+- dask
 - pip:
   - ipython-genutils==0.2.0
   - jupyter-client==5.1.0
