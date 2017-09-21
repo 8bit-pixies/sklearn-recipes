@@ -93,3 +93,4 @@ ENV/
 *.csv
 *.labels
 *.zip
+*.RData

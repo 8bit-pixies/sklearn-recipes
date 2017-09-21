@@ -159,4 +159,3 @@ def spec(X, y=None, mode='rank', **kwargs):
     if mode == 'raw':
         return w_fea
     return feature_ranking(w_fea)
-

@@ -80,4 +80,8 @@ class GraftingClassifier(SGDClassifier):
     
     def predict(self, X):
         X = self._fit_columns(X, transform_only=True)
-        return super(GraftingClassifier, self).predict(X)        
+        return super(GraftingClassifier, self).predict(X)
+        
+    def predict_proba(self, X):
+        X = self._fit_columns(X, transform_only=True)
+        return super(GraftingClassifier, self).predict_proba(X)
