@@ -15,8 +15,6 @@ from sklearn.decomposition import PCA, KernelPCA
 from sklearn.kernel_approximation import Nystroem
 from dpp import sample_dpp, decompose_kernel, sample_conditional_dpp
 
-import random
-
 def entropy(X):
     mm = MinMaxScaler()
     X_mm = mm.fit_transform(X)
@@ -40,7 +38,7 @@ def wilcoxon_group(X, f):
     if len(X.shape) == 1:
         return wilcoxon(X, f).pvalue
     # now we shall perform and check each one...and return only the lowest pvalue
-    return np.max([wilcoxon(x, f) for x in X.T])
+    return np.min([wilcoxon(x, f) for x in X.T])
 
 """
 Implement DPP version that is similar to what is done above
@@ -61,7 +59,6 @@ class DPPClassifier(SGDClassifier):
                  random_state=None, learning_rate="optimal", eta0=0.0,
                  power_t=0.5, class_weight=None, warm_start=False,
                  average=False, n_iter=None, 
-                 intragroup_decay = 0.9, pca_alpha=0.05,
                  intragroup_alpha=0.05, intergroup_thres=None):
         super(DPPClassifier, self).__init__(
             loss=loss, penalty=penalty, alpha=alpha, l1_ratio=l1_ratio,
@@ -93,6 +90,8 @@ class DPPClassifier(SGDClassifier):
         kpca_k = np.argwhere(kpca.lambdas_ > 0.01).flatten().shape[0]
         self.dpp_k['pca'] = pca_k
         self.dpp_k['kpca'] = kpca_k
+        print("PCA K: {}".format(self.dpp_k))
+        print("L dim: {}".format(L.shape))
         
     def add_column_exclusion(self, cols):
         self.coef_info['excluded_cols'] = list(self.coef_info['excluded_cols']) + list(cols)
@@ -118,7 +117,7 @@ class DPPClassifier(SGDClassifier):
         self.coef_info['cols'] = [x for x, _ in col_coef]
         self.coef_info['coef'] = [x for _, x in col_coef]
         self.coef_info['excluded_cols'] = [x for x in self.seen_cols if x not in self.coef_info['cols']]
-        self.coef_ = np.array(self.coef_info['coef']).reshape(1, -1)
+        self.coef_ = np.array(self.coef_info['coef']).reshape(1, -1) 
     
     def _dpp_sel(self, X_, y=None):
         """
@@ -144,8 +143,8 @@ class DPPClassifier(SGDClassifier):
             unseen_kernel = feat_dist[unseen_cols_to_index, :][:, unseen_cols_to_index]
             #k = max(self._dpp_estimate_k(unseen_kernel), int(unseen_kernel.shape[0] * 0.5)+1)            
             k = unseen_kernel.shape[0]
-            #print("Unseen only")
-            #print(k)
+            print("Unseen only")
+            print(k)
         if len(self.coef_info['cols']) == 0:
             feat_index = sample_dpp(decompose_kernel(feat_dist), k=k)
         else:            
@@ -183,9 +182,7 @@ class DPPClassifier(SGDClassifier):
                 if len(feat_check) == 0:
                     feat_check.append(idx)
                     continue
-                wilcoxon_pval = wilcoxon_group(X_sel[:, feat_check], feat)
-                #print("\tWilcoxon: {}".format(wilcoxon_pval))
-                if wilcoxon_pval < self.intragroup_alpha:
+                if wilcoxon_group(X_sel[:, feat_check], feat) >= self.intragroup_alpha:
                     feat_check.append(idx)
                 else:
                     excl_check.append(idx)
@@ -196,9 +193,7 @@ class DPPClassifier(SGDClassifier):
             index_to_col = [col for idx, col in enumerate(X_.columns) if idx in feat_index]
         self.unseen_only = False # perhaps add more conditions around unseen - i.e. once unseen condition kicks in, it remains active?
         self.coef_info['cols'] = list(set(self.coef_info['cols'] + index_to_col))
-        col_rem = X_.columns.difference(self.coef_info['cols'])        
-        # update column exclusion...
-        self.coef_info['excluded_cols'] = [x for x in self.coef_info['excluded_cols'] if x not in self.coef_info['cols']]
+        col_rem = X_.columns.difference(self.coef_info['cols'])
         self.add_column_exclusion(col_rem)        
         
     def fit(self, X, y, coef_init=None, intercept_init=None,
@@ -217,14 +212,8 @@ class DPPClassifier(SGDClassifier):
     
     def partial_fit(self, X, y, sample_weight=None):
         X_ = X.copy()
-        unseen_col_size = len([1 for x in X.columns if x not in self.seen_cols])
         self.seen_cols = list(set(self.seen_cols + X.columns.tolist()))
-        #sample_from_exclude_size = int(len(self.coef_info['excluded_cols']) - (len(self.coef_info['cols'])/2.0))+1
-        sample_from_exclude_size = int(len(self.coef_info['excluded_cols']) - unseen_col_size)
-        if sample_from_exclude_size > 0:
-            cols_excl_sample = random.sample(self.coef_info['excluded_cols'], sample_from_exclude_size)
-            X = X[X.columns.difference(cols_excl_sample)]
-        #X = X[X.columns.difference(self.coef_info['excluded_cols'])]
+        X = X[X.columns.difference(self.coef_info['excluded_cols'])]
         
         # TODO: add DPP selection
         self._dpp_sel(X, y)

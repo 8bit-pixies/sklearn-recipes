@@ -229,6 +229,7 @@ def sample_dpp(L=None,k=None):
         
         # make sure we do a projection onto Vj, 
         # is orthogonal basis
+        V = V + (np.ones(V.shape) * np.finfo(float).eps)
         V_norm = V[choose_item, :]/Vj[choose_item]
         V = V - (Vj.reshape(-1, 1).dot(V_norm.reshape(1, -1))) + (np.ones(V.shape) * np.finfo(float).eps)
         
@@ -411,14 +412,15 @@ def sample_conditional_dpp(L, set_, k=None):
     Id = np.array([1]*L.shape[0])
     Id[set_] = 0
     Id = np.diag(Id)    
-    L_compset_full = np.linalg.inv(Id + L)
+    try:
+        L_compset_full = np.linalg.inv(Id + L)
+    except:
+        L_compset_full = np.linalg.pinv(Id + L)
     L_minor = np.linalg.inv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
     L_compset = L_minor - np.diag([1]*L_minor.shape[0])
     
     # Compute the sample
-    sample = sample_dpp(decompose_kernel(L_compset), k)
-    if k==2: 
-        sample = [sample]
+    sample = np.array(sample_dpp(decompose_kernel(L_compset), k)).flatten()
     return np.concatenate((set_, sample) ,axis=0)
 
 def sample_conditional_dpp2(L, set_, k=None, chosen_set=None):
