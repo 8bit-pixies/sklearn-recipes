@@ -51,6 +51,7 @@ def spec_supervised(X, y, is_classification=True):
     if instances_count > 1000:
         idx = np.random.randint(instances_count, size=1000)
         X = X[idx, :]
+        y = y[idx]
     W_w = similarity_within_class(X, y)
     W_b = similarity_between_class(X, y)
     s_w = SPEC.spec(**{'X': X, 'y': y, 'style':0, 'mode': 'raw', 'W': W_w})
