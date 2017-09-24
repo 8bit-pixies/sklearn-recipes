@@ -8,11 +8,9 @@ from sklearn.linear_model import SGDRegressor, SGDClassifier
 import pandas as pd
 import numpy as np
 
-from osfs_util import dependence_test, fisher_test
+from osfs_util import dependence_test, fisher_test, fast_fisher_test
 from scipy import stats
 from sklearn.metrics.pairwise import rbf_kernel
-from sklearn.mixture import BayesianGaussianMixture
-
 import pandas
 
 class OSFSClassifier(SGDClassifier):
@@ -22,7 +20,7 @@ class OSFSClassifier(SGDClassifier):
                  random_state=None, learning_rate="optimal", eta0=0.0,
                  power_t=0.5, class_weight=None, warm_start=False,
                  average=False, n_iter=None, 
-                 relevance_alpha=0.05):
+                 relevance_alpha=0.01):
         super(OSFSClassifier, self).__init__(
             loss=loss, penalty=penalty, alpha=alpha, l1_ratio=l1_ratio,
             fit_intercept=fit_intercept, max_iter=max_iter, tol=tol,
@@ -38,6 +36,7 @@ class OSFSClassifier(SGDClassifier):
         self.seen_cols = []
         self.base_shape = None
         self.relevance_alpha = relevance_alpha
+        self.redundant_penalty = l1_ratio
     
     def add_column_exclusion(self, cols):
         self.coef_info['excluded_cols'] = self.coef_info['excluded_cols'] + cols
@@ -54,25 +53,37 @@ class OSFSClassifier(SGDClassifier):
         X = X_[X_.columns.difference(self.coef_info['excluded_cols'])]
         
         # order the columns correctly...
-        col_order = self.coef_info['cols'] + list([x for x in X.columns if x not in self.coef_info['cols']])
+        if not transform_only:
+            col_order = self.coef_info['cols'] + list([x for x in X.columns if x not in self.coef_info['cols']])
+        else:
+            col_order = self.coef_info['cols']
         X = X[col_order]
         return X
     
     def _redundancy(self, X, y):
-        _, pval_m = fisher_test(np.array(X), y)
+        _, pval_m = fast_fisher_test(np.array(X), y)
         col_weak = []
         redun_cols = []
+        
         for idx, colname in enumerate(X.columns.tolist()):
-            if colname not in self.coef_info['weak_dep']:
-                continue
+            #if colname not in self.coef_info['weak_dep']:
+            #    continue
             # determine redudundancy.
             pvals = pval_m[idx, :]
-            redun_alpha = np.min(pvals)
+            try:
+                redun_alpha = np.max(pvals)
+            except:
+                redun_alpha = float("inf")
             if redun_alpha < self.relevance_alpha:
                 col_weak.append(colname)
             else:
                 redun_cols.append(colname)
+        #col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if not (col not in col_weak and col in self.coef_info['weak_dep'])]
         col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if col in col_weak]
+        if len(col_coef) == 0:
+            # if everything is redundant throw out all weak columns and resort to 
+            # regulariser?
+            col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if col not in self.coef_info['weak_dep'] and abs(coef) > self.redundant_penalty]
         self.coef_info['cols'] = [x for x, _ in col_coef]
         self.coef_info['coef'] = [x for _, x in col_coef]
         
@@ -89,7 +100,7 @@ class OSFSClassifier(SGDClassifier):
         to then expand the coefficient listing
         """
         X = np.array(X_)
-        _, pval_m = fisher_test(X, y)
+        _, pval_m = fast_fisher_test(X, y)
         cols_to_index = [(idx, x) for idx, x in enumerate(X_.columns) if x in self.coef_info['cols']]
         unseen_cols_to_index = [(idx, x) for idx, x in enumerate(X_.columns) if x not in self.coef_info['cols']]
         # get the appropriate submatrix
@@ -108,7 +119,8 @@ class OSFSClassifier(SGDClassifier):
             pval_test = pval_m[colname_to_indx, :][:, colname_to_indx]
             try:
                 strong_dep = np.max(pval_test[np.triu_indices(pval_test.shape[0], 1)])
-                weak_dep   = np.min(pval_test[np.triu_indices(pval_test.shape[0], 1)])
+                filter_vec = [x for x in pval_test[np.triu_indices(pval_test.shape[0], 1)].flatten() if x > 0]
+                weak_dep   = np.min(filter_vec) if len(filter_vec) > 0 else float("inf")
             except:
                 strong_dep = float("inf")
                 weak_dep = float("inf")
