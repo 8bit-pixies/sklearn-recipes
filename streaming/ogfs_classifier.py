@@ -46,6 +46,11 @@ def convert_to_deciles(y, n=10, gmm=False):
 def spec_supervised(X, y, is_classification=True):
     if not is_classification:
         y = convert_to_deciles(y, 10, gmm=False)
+    # sample X if it is too big...
+    instances_count = X.shape[0]
+    if instances_count > 1000:
+        idx = np.random.randint(instances_count, size=1000)
+        X = X[idx, :]
     W_w = similarity_within_class(X, y)
     W_b = similarity_between_class(X, y)
     s_w = SPEC.spec(**{'X': X, 'y': y, 'style':0, 'mode': 'raw', 'W': W_w})
