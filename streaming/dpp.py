@@ -416,7 +416,10 @@ def sample_conditional_dpp(L, set_, k=None):
         L_compset_full = np.linalg.inv(Id + L)
     except:
         L_compset_full = np.linalg.pinv(Id + L)
-    L_minor = np.linalg.inv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
+    try:
+        L_minor = np.linalg.inv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
+    except:
+        L_minor = np.linalg.pinv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
     L_compset = L_minor - np.diag([1]*L_minor.shape[0])
     
     # Compute the sample

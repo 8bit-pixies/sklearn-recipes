@@ -17,6 +17,7 @@ def fast_cor(X, y):
     We do not care if things are perfectly negatively correlated here
     """
     X_all = np.hstack([X, y.reshape(-1, 1)]).T
+    #X_all = X_all - X_all.mean(axis=0)
     
     # calculate correlation
     if X_all.shape[0] < 1000:
