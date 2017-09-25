@@ -6,116 +6,67 @@ import random
 from scipy.stats import norm
 from sklearn.metrics.pairwise import rbf_kernel, linear_kernel, pairwise_kernels
 from sklearn.kernel_approximation import Nystroem
+from sklearn import preprocessing
 
+from itertools import combinations, permutations, chain
 
-def fast_cor(X, y):
-    """
-    As the dependency is a single variable there 
-    is no need to loop through
-    we can use a kernel trick/approximation to solve it quickly.
-    
-    We do not care if things are perfectly negatively correlated here
-    """
-    X_all = np.hstack([X, y.reshape(-1, 1)]).T
-    #X_all = X_all - X_all.mean(axis=0)
-    
+def fast_cor(X_all):
     # calculate correlation
+    X_scaled = preprocessing.scale(X_all)
     if X_all.shape[0] < 1000:
-        K = pairwise_kernels(X_all, metric='cosine')
+        K = pairwise_kernels(X_scaled.T, metric='cosine')
+        return K
     else:
-        K = Nystroem('cosine').fit_transform(X_all)
-    
-    #k_I = np.eye(K.shape[0])
-    #cov = K.dot(np.linalg.pinv(k_I - K))
-    d_inv = np.sqrt(np.diag(np.diag(K)))
-    corr = d_inv.dot(K).dot(d_inv)
-    return corr
+        K = Nystroem('cosine').fit_transform(X_scaled.T)
+        d_inv = np.sqrt(np.diag(np.diag(K)))
+        corr = d_inv.dot(K).dot(d_inv)
+        return corr
 
-# calculate the partial correlation 
-# using the info from wikipedia
-def fast_partial_cor(X, y):
-    """
-    Calculate the partial correlation
-    """
-    cor_f = fast_cor(X, y)
-    # now take out the last row and column...
-    cor_dim = cor_f.shape[0]-1
-    cor_x = cor_f[:, :cor_dim][:cor_dim, :]
-    cor_z = cor_f[cor_dim, :cor_dim].flatten()
-    
-    # calculate new correlation matrix
-    cor_m = np.ones((cor_x.shape[1], cor_x.shape[1]))
-    y_reshape = y.reshape(-1, 1)
-    tri_idx = np.triu_indices(cor_m.shape[1], 0)
-    for i, j in zip(tri_idx[0].flatten(), tri_idx[1].flatten()):
-        corr = (cor_x[i, j] - cor_z[i]*cor_z[j])
-        corr = corr/(np.sqrt(1-(cor_z[i]*cor_z[i]))*np.sqrt(1-(cor_z[j]*cor_z[j])))
-        cor_m[i, j] = corr
-        cor_m[j, i] = corr
-    return cor_m #, cor_x 
-
-def fast_fisher_test(X, y):
-    """
-    Claculate score between x, y, and z
-    """
-    #cor_m = partial_cor(X, y)
-    cor_m = fast_partial_cor(X, y)
-    #print(cor_m.shape)
-    #print(cor_m)
-    #cor_m[cor_m == 0] = np.finfo(float).eps
-    #cor_v = cor_m[0, 1]
+def fisher_test(cor_m, N, z_n):
     cor_m = np.minimum(cor_m, 0.9999)
     cor_m = np.maximum(cor_m, -0.9999)
     z_score = 0.5*np.log((1+cor_m)/(1-cor_m))
-    z_n = len(set(list(y)))
-    N = X.shape[0]
     test_stat = np.sqrt(N - z_n -3) * np.abs(z_score)
     p_val = 1-scipy.stats.norm.cdf(test_stat)
-    np.fill_diagonal(p_val, float("inf"))
-    return test_stat, p_val
+    return p_val
 
-def partial_cor(X, y):
-    """
-    Calculate all columns of X conditional on y
-    returns a partial correlation matrix
-    """
-    cor_m = np.ones((X.shape[1], X.shape[1]))
-    y_reshape = y.reshape(-1, 1)
-    tri_idx = np.triu_indices(X.shape[1], 1)
-    for i, j in zip(tri_idx[0].flatten(), tri_idx[1].flatten()):
-        beta_i = scipy.linalg.lstsq(X[:, i].reshape(-1, 1), y_reshape)[0]
-        beta_j = scipy.linalg.lstsq(X[:, j].reshape(-1, 1), y_reshape)[0]
-        res_j = (X[:, j] - (y*beta_i)).flatten()
-        res_i = (X[:, i] - (y*beta_j)).flatten()
-        corr = stats.pearsonr(res_i, res_j)[0]
-        cor_m[i, j] = corr
-        cor_m[j, i] = corr
-    return cor_m
+def powerset(iterable, max_size=3):
+    "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
+    s = list(iterable)
+    return chain.from_iterable(combinations(s, r) for r in range(1, max_size+1))
 
-# compute fisher info
-def fisher_test(X, y):
-    """
-    Claculate score between x, y, and z
-    """
-    cor_m = partial_cor(X, y)
-    #print(cor_m)
-    #cor_m = fast_partial_cor(X, y)
-    #cor_m[cor_m == 0] = np.finfo(float).eps
-    #cor_v = cor_m[0, 1]
-    z_score = 0.5*np.log((1+cor_m)/(1-cor_m))
-    z_n = len(set(list(y)))
-    N = X.shape[0]
-    test_stat = np.sqrt(N - z_n -3) * np.abs(z_score)
-    p_val = 1-scipy.stats.norm.cdf(test_stat)
-    np.fill_diagonal(p_val, float("inf"))
-    return test_stat, p_val
+def partial_dep_test(x1, c, x_dat, x1_name, x_dat_names, max_search_depth=3, prev=[]):
+    max_search_depth = min(max_search_depth, len(x_dat_names))
+    x_n = x_dat.shape[0]
+    x_all = np.hstack(
+        [x1.reshape(-1, 1), 
+         c.reshape(-1, 1), 
+         x_dat])
+    x_cor = fast_cor(x_all)
+    partial_cor = []
+    for cond in list(powerset(range(2, x_cor.shape[1]), max_search_depth)):
+        name_set = set([x_dat_names[x-2] for x in cond])
+        check_prev_result = [x for x in prev if x['var'] == x1_name and x['cond'] == name_set]
+        if len(
+        check_prev_result
+        ) > 0:
+            partial_cor.append(check_prev_result[0])
+            continue
+        
+        z_n = len(cond)
+        idx = [0, 1] + list(cond)
+        V = x_cor[idx, :][:, idx]
+        V = np.nan_to_num(V)
+        try:
+            V_inv = np.linalg.pinv(V)
+        except:
+            V_inv = scipy.linalg.pinv(V)
+        cor = -V_inv[0][1]/(np.sqrt(V_inv[0][0]*V_inv[1][1]))
+        partial_cor.append({
+            'var': x1_name,
+            'cor': cor,
+            'pval': fisher_test(cor, x_n, z_n),
+            'cond': name_set
+        })
+    return partial_cor
 
-# calculate weak and strong dependences
-def dependence_test(X, y):
-    teststat, pval = fisher_test(X, y)
-    strong_dep = np.max(pval[np.triu_indices(pval.shape[0], 1)])
-    weak_dep   = np.min(pval[np.triu_indices(pval.shape[0], 1)])
-    return {
-        'strong_dependence': strong_dep, 
-        'weak_dependence': weak_dep
-    }
