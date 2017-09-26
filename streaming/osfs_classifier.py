@@ -15,6 +15,7 @@ from osfs_util import partial_dep_test
 from scipy import stats
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.mixture import BayesianGaussianMixture
+import random
 import pandas
 
 class OSFSClassifier(SGDClassifier):
@@ -24,7 +25,7 @@ class OSFSClassifier(SGDClassifier):
                  random_state=None, learning_rate="optimal", eta0=0.0,
                  power_t=0.5, class_weight=None, warm_start=False,
                  average=False, n_iter=None, 
-                 relevance_alpha=0.05):
+                 relevance_alpha=0.05, fast_osfs=True):
         super(OSFSClassifier, self).__init__(
             loss=loss, penalty=penalty, alpha=alpha, l1_ratio=l1_ratio,
             fit_intercept=fit_intercept, max_iter=max_iter, tol=tol,
@@ -41,6 +42,8 @@ class OSFSClassifier(SGDClassifier):
         self.partial_info = []
         self.base_shape = None
         self.relevance_alpha = relevance_alpha
+        self.mode = 'weak_only' if fast_osfs else 'all'
+        self.fast_osfs = True
     
     def add_column_exclusion(self, cols):
         self.coef_info['excluded_cols'] = self.coef_info['excluded_cols'] + cols
@@ -61,13 +64,24 @@ class OSFSClassifier(SGDClassifier):
         X = X[col_order]
         return X
     
-    def _redundancy(self, X, y): 
+    def _redundancy(self, X, y, mode='weak_only'): 
         col_redun = []
-        for col in self.coef_info['cols']:
-            x_dat = X[X.columns.difference([col])]
+        X_temp = X[self.coef_info['cols']]
+        if mode == 'weak_only':
+            col_eval = self.coef_info['weak_dep']
+        else:
+            col_eval = self.coef_info['cols']
+        for col in col_eval:            
+            x_dat = X_temp[X_temp.columns.difference([col]+col_redun)]
             x1 = np.array(X[[col]]).flatten()
-            partial_cor = partial_dep_test(x1, y, np.array(x_dat), col, list(x_dat.columns), 3, prev=self.partial_info[:])
-            self.partial_info = self.partial_info[:] + partial_cor            
+            if mode == 'weak_only':
+                #print("\t\t{}".format(x_dat.shape))
+                partial_cor = partial_dep_test(x1, y, np.array(x_dat), col, list(x_dat.columns), 1, prev=self.partial_info[:], early_stopping=True, alpha=self.relevance_alpha)
+            else:
+                print("\t\t{}".format(x_dat.shape))
+                depth = 2 if x_dat.shape[1] < 500 else 2
+                partial_cor = partial_dep_test(x1, y, np.array(x_dat), col, list(x_dat.columns), depth, prev=self.partial_info[:], early_stopping=True, alpha=self.relevance_alpha)
+            self.partial_info = self.partial_info[:] + partial_cor
             #print(x1)
             #print(y)
             #print(x_dat.shape)
@@ -81,7 +95,7 @@ class OSFSClassifier(SGDClassifier):
             strong_dep = np.max([x['pval'] for x in partial_cor])
             if strong_dep >= self.relevance_alpha:
                 col_redun.append(col)
-        
+        self.partial_info = self.partial_info[:1000]
         # excl cols that are in self.coef_info['weak_dep']
         col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if col not in col_redun]        
         self.coef_info['cols'] = [x for x, _ in col_coef]
@@ -106,27 +120,39 @@ class OSFSClassifier(SGDClassifier):
         col_strong = []
         col_weak = []
         x_data = np.array(X_[cols_name])
-        for new_col, colname in unseen_cols_to_index:
-            x_data = np.array(X_[cols_name+col_strong+col_weak])
-            if x_data.shape[1] == 0:
-                col_weak.append(colname)
-                continue
-            x1 = np.array(X_[[colname]]).flatten()
-            partial_cor = partial_dep_test(x1, y, x_data, colname, cols_name+col_strong+col_weak, 3, prev=self.partial_info[:])
-            self.partial_info = self.partial_info[:] + partial_cor  
-            #print(x1)
-            #print(y)
-            #print(x_data.shape)
-            #print(colname)
-            #print(cols_name+col_strong+col_weak)
-            #print("iter: {}".format(colname))
-            
-            strong_dep = np.max([x['pval'] for x in partial_cor])
-            weak_dep = np.min([x['pval'] for x in partial_cor])
-            if strong_dep < self.relevance_alpha:
-                col_strong.append(colname)
-            elif weak_dep < self.relevance_alpha:
-                col_weak.append(colname)
+        
+        if not self.fast_osfs:
+            for new_col, colname in unseen_cols_to_index:
+                x_data = np.array(X_[cols_name+col_strong+col_weak])
+                if x_data.shape[1] == 0:
+                    col_weak.append(colname)
+                    continue
+                x1 = np.array(X_[[colname]]).flatten()
+                if len(set(list(x1))) == 1:
+                    # remove constant fields (we can add variance filter later...)
+                    continue
+                partial_cor = partial_dep_test(x1, y, x_data, colname, cols_name+col_strong+col_weak, 3, prev=self.partial_info[:])
+                self.partial_info = self.partial_info[:] + partial_cor  
+                # perform dependency check with no conditioning for fast osfs
+                #print(x1)
+                #print(y)
+                #print(x_data.shape)
+                #print(colname)
+                #print(cols_name+col_strong+col_weak)
+                #print("iter: {}".format(colname))
+                
+                strong_dep = np.max([x['pval'] for x in partial_cor])
+                weak_dep = np.min([x['pval'] for x in partial_cor])
+                if strong_dep < self.relevance_alpha:
+                    col_strong.append(colname)
+                elif weak_dep < self.relevance_alpha:
+                    col_weak.append(colname)
+        else:
+            # simply perform one-way analysis
+            unseen_col = [y for x, y in unseen_cols_to_index]
+            x_dat_unseen = X_[unseen_col]
+            _, f_pval = sklearn.feature_selection.f_classif(x_dat_unseen, y)
+            col_weak = [x for x, y in list(zip(unseen_col, f_pval)) if y < self.relevance_alpha and not np.isnan(y)]
         self.coef_info['cols'] = list(set(self.coef_info['cols'] + col_strong + col_weak))
         self.coef_info['strong_dep'] = list(set(self.coef_info['strong_dep'] + col_strong))
         self.coef_info['weak_dep'] = list(set(self.coef_info['weak_dep'] + col_weak))
@@ -141,10 +167,21 @@ class OSFSClassifier(SGDClassifier):
         self._osfs_sel(X, y)
         #self.coef_info['weak_dep'] = X.columns.tolist()
         X = self._fit_columns(X)
+        no_redundancy=False
+        if X.shape[1] == 0:
+            # force it to add all columns for now...
+            no_redundancy=True
+            self.coef_info['cols'] = self.seen_cols[:]
+            self.coef_info['strong_dep'] = self.coef_info['cols'][:]
+            self.coef_info['weak_dep'] = []
+            self.coef_info['excluded_cols'] = [x for x in self.seen_cols if x not in self.coef_info['cols']]
+            X = X_.copy()
+            X = self._fit_columns(X)
         
         super(OSFSClassifier, self).fit(X, y, coef_init=coef_init, intercept_init=intercept_init,
             sample_weight=sample_weight)
-        self._redundancy(X, y)
+        if no_redundancy:
+            self._redundancy(X, y, self.mode)
         return self
     
     def partial_fit(self, X, y, sample_weight=None):
@@ -154,7 +191,16 @@ class OSFSClassifier(SGDClassifier):
         #print(X.shape)
         self._osfs_sel(X, y)
         X = self._fit_columns(X)
-        #print(X.shape)
+        no_redundancy=False
+        if X.shape[1] == 0:
+            # force it to add all columns for now...
+            no_redundancy=True
+            self.coef_info['cols'] = self.seen_cols[:]
+            self.coef_info['strong_dep'] = self.coef_info['cols'][:]
+            self.coef_info['weak_dep'] = []
+            self.coef_info['excluded_cols'] = [x for x in self.seen_cols if x not in self.coef_info['cols']]
+            X = X_.copy()
+            X = self._fit_columns(X)
         
         # now update coefficients
         n_samples, n_features = X.shape
@@ -162,8 +208,10 @@ class OSFSClassifier(SGDClassifier):
         coef_list[:len(self.coef_info['coef'])] = self.coef_info['coef']
         self.coef_ = np.array(coef_list).reshape(1, -1)
         super(OSFSClassifier, self).partial_fit(X, y, sample_weight=None)  
-        X = self._fit_columns(X)
-        self._redundancy(X, y)
+        if no_redundancy:
+            self._redundancy(X, y, 'weak_only')
+            if self.mode != 'weak_only':
+                self._redundancy(X, y, self.mode)
         return self
     
     def predict(self, X):

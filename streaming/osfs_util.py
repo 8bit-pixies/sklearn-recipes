@@ -13,11 +13,15 @@ from itertools import combinations, permutations, chain
 def fast_cor(X_all):
     # calculate correlation
     X_scaled = preprocessing.scale(X_all)
-    if X_all.shape[0] < 1000:
+    if X_all.shape[1] < 0:
         K = pairwise_kernels(X_scaled.T, metric='cosine')
         return K
     else:
         K = Nystroem('cosine').fit_transform(X_scaled.T)
+        if K.shape[0] != K.shape[1]:
+            # we will have to use pairwise kernels...
+            K = pairwise_kernels(X_scaled.T, metric='cosine')
+            return K
         d_inv = np.sqrt(np.diag(np.diag(K)))
         corr = d_inv.dot(K).dot(d_inv)
         return corr
@@ -35,7 +39,7 @@ def powerset(iterable, max_size=3):
     s = list(iterable)
     return chain.from_iterable(combinations(s, r) for r in range(1, max_size+1))
 
-def partial_dep_test(x1, c, x_dat, x1_name, x_dat_names, max_search_depth=3, prev=[]):
+def partial_dep_test(x1, c, x_dat, x1_name, x_dat_names, max_search_depth=3, prev=[], early_stopping=False, alpha=0.05):
     max_search_depth = min(max_search_depth, len(x_dat_names))
     x_n = x_dat.shape[0]
     x_all = np.hstack(
@@ -62,11 +66,14 @@ def partial_dep_test(x1, c, x_dat, x1_name, x_dat_names, max_search_depth=3, pre
         except:
             V_inv = scipy.linalg.pinv(V)
         cor = -V_inv[0][1]/(np.sqrt(V_inv[0][0]*V_inv[1][1]))
+        pval = fisher_test(cor, x_n, z_n)
         partial_cor.append({
             'var': x1_name,
             'cor': cor,
-            'pval': fisher_test(cor, x_n, z_n),
+            'pval': pval,
             'cond': name_set
         })
+        if early_stopping and pval > alpha:
+            return partial_cor
     return partial_cor
 
