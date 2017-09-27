@@ -5,17 +5,12 @@ import sklearn
 from sklearn.datasets import make_regression, make_classification
 from sklearn.linear_model import SGDRegressor, SGDClassifier
 
-from sklearn.datasets import make_regression, make_classification
-from sklearn.linear_model import SGDRegressor, SGDClassifier
-
 import pandas as pd
 import numpy as np
 
-from osfs_util import partial_dep_test
+from osfs_util import dependence_test, fisher_test, fast_fisher_test
 from scipy import stats
 from sklearn.metrics.pairwise import rbf_kernel
-from sklearn.mixture import BayesianGaussianMixture
-import random
 import pandas
 
 class OSFSClassifier(SGDClassifier):
@@ -25,7 +20,7 @@ class OSFSClassifier(SGDClassifier):
                  random_state=None, learning_rate="optimal", eta0=0.0,
                  power_t=0.5, class_weight=None, warm_start=False,
                  average=False, n_iter=None, 
-                 relevance_alpha=0.05, fast_osfs=True):
+                 relevance_alpha=0.01):
         super(OSFSClassifier, self).__init__(
             loss=loss, penalty=penalty, alpha=alpha, l1_ratio=l1_ratio,
             fit_intercept=fit_intercept, max_iter=max_iter, tol=tol,
@@ -39,11 +34,9 @@ class OSFSClassifier(SGDClassifier):
         self.coef_info = {'cols': [], 'coef':[], 'excluded_cols': [], 
                           'strong_dep': [], 'weak_dep': []}
         self.seen_cols = []
-        self.partial_info = []
         self.base_shape = None
         self.relevance_alpha = relevance_alpha
-        self.mode = 'weak_only' if fast_osfs else 'all'
-        self.fast_osfs = True
+        self.redundant_penalty = l1_ratio
     
     def add_column_exclusion(self, cols):
         self.coef_info['excluded_cols'] = self.coef_info['excluded_cols'] + cols
@@ -60,48 +53,43 @@ class OSFSClassifier(SGDClassifier):
         X = X_[X_.columns.difference(self.coef_info['excluded_cols'])]
         
         # order the columns correctly...
-        col_order = self.coef_info['cols'] + list([x for x in X.columns if x not in self.coef_info['cols']])
+        if not transform_only:
+            col_order = self.coef_info['cols'] + list([x for x in X.columns if x not in self.coef_info['cols']])
+        else:
+            col_order = self.coef_info['cols']
         X = X[col_order]
         return X
     
-    def _redundancy(self, X, y, mode='weak_only'): 
-        col_redun = []
-        X_temp = X[self.coef_info['cols']]
-        if mode == 'weak_only':
-            col_eval = self.coef_info['weak_dep']
-        else:
-            col_eval = self.coef_info['cols']
-        for col in col_eval:            
-            x_dat = X_temp[X_temp.columns.difference([col]+col_redun)]
-            x1 = np.array(X[[col]]).flatten()
-            if mode == 'weak_only':
-                #print("\t\t{}".format(x_dat.shape))
-                partial_cor = partial_dep_test(x1, y, np.array(x_dat), col, list(x_dat.columns), 1, prev=self.partial_info[:], early_stopping=True, alpha=self.relevance_alpha)
+    def _redundancy(self, X, y):
+        _, pval_m = fast_fisher_test(np.array(X), y)
+        col_weak = []
+        redun_cols = []
+        
+        for idx, colname in enumerate(X.columns.tolist()):
+            #if colname not in self.coef_info['weak_dep']:
+            #    continue
+            # determine redudundancy.
+            pvals = pval_m[idx, :]
+            try:
+                redun_alpha = np.max(pvals)
+            except:
+                redun_alpha = float("inf")
+            if redun_alpha < self.relevance_alpha:
+                col_weak.append(colname)
             else:
-                print("\t\t{}".format(x_dat.shape))
-                depth = 2 if x_dat.shape[1] < 500 else 2
-                partial_cor = partial_dep_test(x1, y, np.array(x_dat), col, list(x_dat.columns), depth, prev=self.partial_info[:], early_stopping=True, alpha=self.relevance_alpha)
-            self.partial_info = self.partial_info[:] + partial_cor
-            #print(x1)
-            #print(y)
-            #print(x_dat.shape)
-            #print(col)
-            #print(list(x_dat.columns))
-            #print(partial_cor)
-            #print("iter: {}".format(col))
-            test_case = [x['pval'] for x in partial_cor]
-            if len(test_case) == 0:
-                continue
-            strong_dep = np.max([x['pval'] for x in partial_cor])
-            if strong_dep >= self.relevance_alpha:
-                col_redun.append(col)
-        self.partial_info = self.partial_info[:1000]
-        # excl cols that are in self.coef_info['weak_dep']
-        col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if col not in col_redun]        
+                redun_cols.append(colname)
+        #col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if not (col not in col_weak and col in self.coef_info['weak_dep'])]
+        col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if col in col_weak]
+        if len(col_coef) == 0:
+            # if everything is redundant throw out all weak columns and resort to 
+            # regulariser?
+            col_coef = [(col, coef) for col, coef in zip(X.columns.tolist(), self.coef_.flatten()) if col not in self.coef_info['weak_dep'] and abs(coef) > self.redundant_penalty]
         self.coef_info['cols'] = [x for x, _ in col_coef]
         self.coef_info['coef'] = [x for _, x in col_coef]
-        self.coef_info['strong_dep'] = self.coef_info['cols'][:]
-        self.coef_info['weak_dep'] = []
+        
+        # excl cols that are in self.coef_info['weak_dep']
+        weak_dep = [x for x in self.coef_info['weak_dep'][:] if x in col_weak]
+        self.coef_info['weak_dep'] = weak_dep[:]
         self.coef_info['excluded_cols'] = [x for x in self.seen_cols if x not in self.coef_info['cols']]
         self.coef_ = np.array(self.coef_info['coef']).reshape(1, -1)
     
@@ -112,51 +100,56 @@ class OSFSClassifier(SGDClassifier):
         to then expand the coefficient listing
         """
         X = np.array(X_)
+        _, pval_m = fast_fisher_test(X, y)
         cols_to_index = [(idx, x) for idx, x in enumerate(X_.columns) if x in self.coef_info['cols']]
         unseen_cols_to_index = [(idx, x) for idx, x in enumerate(X_.columns) if x not in self.coef_info['cols']]
+        # get the appropriate submatrix
         
-        # iterate to determine strong/weak relevance
-        cols_name = [x[1] for x in cols_to_index]
         col_strong = []
         col_weak = []
-        x_data = np.array(X_[cols_name])
+        #print(X_.columns.tolist())
+        # we will have to evaluate each feature one at a time!
+        for new_col, colname in unseen_cols_to_index:
+            new_sel = cols_to_index + col_strong + col_weak + [colname]
+            colname_to_indx = [idx for idx, x in enumerate(X_.columns.tolist()) if x in new_sel]
+            #print(colname_to_indx)
+            if len(colname_to_indx) == 1:
+                col_weak.append(colname)
+                continue
+            pval_test = pval_m[colname_to_indx, :][:, colname_to_indx]
+            try:
+                strong_dep = np.max(pval_test[np.triu_indices(pval_test.shape[0], 1)])
+                filter_vec = [x for x in pval_test[np.triu_indices(pval_test.shape[0], 1)].flatten() if x > 0]
+                weak_dep   = np.min(filter_vec) if len(filter_vec) > 0 else float("inf")
+            except:
+                strong_dep = float("inf")
+                weak_dep = float("inf")
+            #print(strong_dep)
+            #print(weak_dep)
+            if strong_dep < self.relevance_alpha:
+                col_strong.append(colname)
+            elif weak_dep < self.relevance_alpha:
+                col_weak.append(colname)
         
-        if not self.fast_osfs:
-            for new_col, colname in unseen_cols_to_index:
-                x_data = np.array(X_[cols_name+col_strong+col_weak])
-                if x_data.shape[1] == 0:
-                    col_weak.append(colname)
+        # now evaluate all the weak columns to determine if they are redundant or not.
+        """
+        sel_cols = list(self.coef_info['cols']) + list(col_strong) + list(col_weak)
+        X_redun = X_[sel_cols]
+        if X_redun.shape[0] > 0:
+            _, pval_m = fisher_test(np.array(X_redun), y)
+            for idx, col in enumerate(X_redun.columns):
+                if col not in col_weak:
                     continue
-                x1 = np.array(X_[[colname]]).flatten()
-                if len(set(list(x1))) == 1:
-                    # remove constant fields (we can add variance filter later...)
-                    continue
-                partial_cor = partial_dep_test(x1, y, x_data, colname, cols_name+col_strong+col_weak, 3, prev=self.partial_info[:])
-                self.partial_info = self.partial_info[:] + partial_cor  
-                # perform dependency check with no conditioning for fast osfs
-                #print(x1)
-                #print(y)
-                #print(x_data.shape)
-                #print(colname)
-                #print(cols_name+col_strong+col_weak)
-                #print("iter: {}".format(colname))
-                
-                strong_dep = np.max([x['pval'] for x in partial_cor])
-                weak_dep = np.min([x['pval'] for x in partial_cor])
-                if strong_dep < self.relevance_alpha:
-                    col_strong.append(colname)
-                elif weak_dep < self.relevance_alpha:
-                    col_weak.append(colname)
-        else:
-            # simply perform one-way analysis
-            unseen_col = [y for x, y in unseen_cols_to_index]
-            x_dat_unseen = X_[unseen_col]
-            _, f_pval = sklearn.feature_selection.f_classif(x_dat_unseen, y)
-            col_weak = [x for x, y in list(zip(unseen_col, f_pval)) if y < self.relevance_alpha and not np.isnan(y)]
+                elif np.min(pval_m[idx, :]) < self.relevance_alpha:
+                    col_strong.append(col)
+        """
+        # update infomation
+        #print(self.coef_info['cols'])
+        #print(col_strong)
         self.coef_info['cols'] = list(set(self.coef_info['cols'] + col_strong + col_weak))
         self.coef_info['strong_dep'] = list(set(self.coef_info['strong_dep'] + col_strong))
         self.coef_info['weak_dep'] = list(set(self.coef_info['weak_dep'] + col_weak))
-        self.coef_info['excluded_cols'] = [col for col in self.seen_cols if col not in self.coef_info['cols']]
+        self.coef_info['excluded_cols'] = [col for col in self.seen_cols if col not in self.coef_info['cols']]        
         
     def fit(self, X, y, coef_init=None, intercept_init=None,
             sample_weight=None):
@@ -167,21 +160,10 @@ class OSFSClassifier(SGDClassifier):
         self._osfs_sel(X, y)
         #self.coef_info['weak_dep'] = X.columns.tolist()
         X = self._fit_columns(X)
-        no_redundancy=False
-        if X.shape[1] == 0:
-            # force it to add all columns for now...
-            no_redundancy=True
-            self.coef_info['cols'] = self.seen_cols[:]
-            self.coef_info['strong_dep'] = self.coef_info['cols'][:]
-            self.coef_info['weak_dep'] = []
-            self.coef_info['excluded_cols'] = [x for x in self.seen_cols if x not in self.coef_info['cols']]
-            X = X_.copy()
-            X = self._fit_columns(X)
         
         super(OSFSClassifier, self).fit(X, y, coef_init=coef_init, intercept_init=intercept_init,
             sample_weight=sample_weight)
-        if no_redundancy:
-            self._redundancy(X, y, self.mode)
+        self._redundancy(X, y)
         return self
     
     def partial_fit(self, X, y, sample_weight=None):
@@ -191,16 +173,7 @@ class OSFSClassifier(SGDClassifier):
         #print(X.shape)
         self._osfs_sel(X, y)
         X = self._fit_columns(X)
-        no_redundancy=False
-        if X.shape[1] == 0:
-            # force it to add all columns for now...
-            no_redundancy=True
-            self.coef_info['cols'] = self.seen_cols[:]
-            self.coef_info['strong_dep'] = self.coef_info['cols'][:]
-            self.coef_info['weak_dep'] = []
-            self.coef_info['excluded_cols'] = [x for x in self.seen_cols if x not in self.coef_info['cols']]
-            X = X_.copy()
-            X = self._fit_columns(X)
+        #print(X.shape)
         
         # now update coefficients
         n_samples, n_features = X.shape
@@ -208,10 +181,7 @@ class OSFSClassifier(SGDClassifier):
         coef_list[:len(self.coef_info['coef'])] = self.coef_info['coef']
         self.coef_ = np.array(coef_list).reshape(1, -1)
         super(OSFSClassifier, self).partial_fit(X, y, sample_weight=None)  
-        if no_redundancy:
-            self._redundancy(X, y, 'weak_only')
-            if self.mode != 'weak_only':
-                self._redundancy(X, y, self.mode)
+        self._redundancy(X, y)
         return self
     
     def predict(self, X):
@@ -221,4 +191,4 @@ class OSFSClassifier(SGDClassifier):
     def predict_proba(self, X):
         X = self._fit_columns(X, transform_only=True)
         #print(X.shape)
-        return super(OSFSClassifier, self).predict_proba(X)
+        return super(OSFSClassifier, self).predict_proba(X)   
