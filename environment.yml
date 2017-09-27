@@ -1,13 +1,22 @@
 name: skrecipe
 channels:
+- conda-forge
 - defaults
 dependencies:
+- metakernel=0.20.7=py_0
+- oct2py=4.0.6=py36_0
+- octave_kernel=0.27.0=py36_0
+- pexpect=4.2.1=py36_0
 - _nb_ext_conf=0.4.0=py36_1
 - anaconda-client=1.6.3=py36_0
+- bkcharts=0.2=py36_0
 - bleach=1.5.0=py36_0
+- bokeh=0.12.7=py36_0
 - certifi=2016.2.28=py36_0
+- cloudpickle=0.4.0=py36_0
 - clyent=1.2.2=py36_0
 - colorama=0.3.9=py36_0
+- dask=0.15.2=py36_0
 - decorator=4.1.2=py36_0
 - entrypoints=0.2.3=py36_0
 - html5lib=0.9999999=py36_0
@@ -25,6 +34,7 @@ dependencies:
 - jupyter_console=5.2.0=py36_0
 - jupyter_core=4.3.0=py36_0
 - libpng=1.6.30=vc14_1
+- locket=0.2.0=py36_1
 - markupsafe=1.0=py36_0
 - mistune=0.7.4=py36_0
 - mkl=2017.0.3=0
@@ -39,6 +49,7 @@ dependencies:
 - openssl=1.0.2l=vc14_0
 - pandas=0.20.3=py36_0
 - pandocfilters=1.4.2=py36_0
+- partd=0.3.8=py36_0
 - path.py=10.3.1=py36_0
 - pickleshare=0.7.4=py36_0
 - pip=9.0.1=py36_1
@@ -60,6 +71,7 @@ dependencies:
 - sip=4.18=py36_0
 - six=1.10.0=py36_0
 - testpath=0.3.1=py36_0
+- toolz=0.8.2=py36_0
 - tornado=4.5.2=py36_0
 - traitlets=4.3.2=py36_0
 - vs2015_runtime=14.0.25420=0
@@ -68,7 +80,6 @@ dependencies:
 - widgetsnbextension=3.0.2=py36_0
 - wincertstore=0.2=py36_0
 - zlib=1.2.11=vc14_0
-- dask
 - pip:
   - ipython-genutils==0.2.0
   - jupyter-client==5.1.0
@@ -77,6 +88,7 @@ dependencies:
   - nb-anacondacloud==1.4.0
   - nb-conda==2.2.0
   - nb-conda-kernels==2.1.0
+  - octave-kernel==0.27.0
   - prompt-toolkit==1.0.15
-
+prefix: C:\Users\chapm\Anaconda3\envs\skrecipe
 
