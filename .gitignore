@@ -94,3 +94,4 @@ ENV/
 *.labels
 *.zip
 *.RData
+*.mat
