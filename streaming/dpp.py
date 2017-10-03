@@ -183,11 +183,12 @@ def sample_dpp(L=None,k=None):
         D = np.divide(L['D'], (1+L['D']))
         # check this - might just do a random.sample along axis.
         v = np.random.randint(0, L['V'].shape[1], random.choice(range(L['V'].shape[1])))
-        v = np.argwhere(np.random.uniform(size=(len(D), 1) <= D))
+        u_proba = np.random.uniform(size=(len(D), ))
+        v = np.argwhere(u_proba <= D).flatten()
     else:
         v = sample_k(L['D'], k)
     
-    k = len(v)    
+    k = len(v)
     V = L['V'][:, v]    
 
     # iterate
@@ -212,7 +213,8 @@ def sample_dpp(L=None,k=None):
         P_list = [x for x, _ in P_index]
         P_norm = np.array([p for _, p in P_index])
         P_norm = P_norm/np.sum(P_norm)
-        choose_item = np.random.choice(range(len(P_list)), 1, p=P_norm)[0]
+        choose_item = np.random.choice(range(len(P_list)), 1, p=P_norm.flatten())
+        choose_item = choose_item.flatten()[0]
         
         # add the index into our sampler
         Y.append(y_index[choose_item])
