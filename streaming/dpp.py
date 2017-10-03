@@ -15,6 +15,10 @@ import numpy as np
 import random
 import scipy
 
+import os
+os.environ['OCTAVE_EXECUTABLE'] = "C:/Octave/Octave-4.2.1/bin/octave-cli-4.2.1.exe"
+from oct2py import octave
+
 
 """
 replicate `null`
@@ -164,6 +168,7 @@ def decompose_kernel(M):
         * D - diagonals of eigenvalues
     """
     L = {}    
+    M = np.nan_to_num(M)
     D, V  = np.linalg.eig(M)
     L['M'] = M.copy()
     L['V'] = np.real(V.copy())
@@ -417,11 +422,19 @@ def sample_conditional_dpp(L, set_, k=None):
     try:
         L_compset_full = np.linalg.inv(Id + L)
     except:
-        L_compset_full = np.linalg.pinv(Id + L)
+        try:
+            L_compset_full = np.linalg.pinv(Id + L)
+        except:
+            temp_L = Id + L
+            L_compset_full = octave.pinv(temp_L)
     try:
         L_minor = np.linalg.inv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
     except:
-        L_minor = np.linalg.pinv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
+        try:
+            L_minor = np.linalg.pinv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
+        except:
+            temp_L = np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0)
+            L_minor = octave.pinv(temp_L)
     L_compset = L_minor - np.diag([1]*L_minor.shape[0])
     
     # Compute the sample

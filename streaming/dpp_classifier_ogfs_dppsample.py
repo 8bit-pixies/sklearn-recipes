@@ -13,9 +13,138 @@ from scipy.stats import wilcoxon
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.decomposition import PCA, KernelPCA
 from sklearn.kernel_approximation import Nystroem
-from dpp import sample_dpp, decompose_kernel, sample_conditional_dpp, elem_sympoly
+from dpp import sample_dpp, decompose_kernel, sample_conditional_dpp
 
 import random
+from collections import Counter
+
+def class_separability(X, y, mode='mitra'):
+    """
+    Calculates the class separability based on the mitra paper    
+    """    
+    # get prior probs
+    prior_proba = Counter(y)
+    
+    s_w = []    
+    for class_ in prior_proba.keys():
+        mask = y==class_
+        X_sel = X[mask, :]
+        cov_sig = np.cov(X_sel.T)
+        s_w.append(cov_sig * prior_proba[class_])
+    s_w = np.atleast_2d(np.add(*s_w))
+    
+    
+    s_b = []
+    m_o = np.mean(X, axis=0).reshape(-1, 1)
+    for class_ in prior_proba.keys():
+        mu_m = prior_proba[class_] - m_o
+        s_b.append(np.dot(mu_m, mu_m.T))
+    s_b = np.add(*s_b)
+    return s_b, s_w
+
+def evaluate_feats0(s_b, s_w):
+    curr_u1 = []
+    curr_u2 = []
+    my_feats = []
+    prev_score = None
+    try:
+        s_b_inv = np.linalg.inv(s_b)
+    except:
+        s_b_inv = np.linalg.pinv(s_b)
+    S = np.trace(np.dot(s_b_inv, s_w))
+    eval_order = np.argsort(S).flatten()
+    for idx in list(eval_order):
+        if prev_score is None:
+            curr_u1.append(s_b[idx])
+            curr_u2.append(s_w[idx])
+            my_feats.append(idx)
+        else:
+            test_u1 = curr_u1[:]
+            test_u2 = curr_u2[:]
+            test_u1.append(s_b[idx])
+            test_u2.append(s_w[idx])
+            score = (prev_score - (np.sum(test_u1)/np.sum(test_u2)))
+            if score > 0.001:
+                my_feats.append(idx)
+                curr_u1.append(s_b[idx])
+                curr_u2.append(s_w[idx])
+        prev_score = np.sum(curr_u1)/np.sum(curr_u2)
+    return list(my_feats)
+
+def evaluate_feats1(s_b, s_w, highest_best=True):
+    curr_u1 = []
+    curr_u2 = []
+    my_feats = []
+    prev_score = None
+    X = s_b/s_w
+    eval_order = np.argsort(X).flatten()
+    if highest_best:
+        eval_order = eval_order[::-1]
+    for idx in list(eval_order):
+        if prev_score is None:
+            curr_u1.append(s_b[idx])
+            curr_u2.append(s_w[idx])
+            my_feats.append(idx)
+        else:
+            test_u1 = curr_u1[:]
+            test_u2 = curr_u2[:]
+            test_u1.append(s_b[idx])
+            test_u2.append(s_w[idx])
+            score = ((np.sum(test_u1)/np.sum(test_u2)) - prev_score)
+            if score > 0.001:
+                my_feats.append(idx)
+                curr_u1.append(s_b[idx])
+                curr_u2.append(s_w[idx])
+        prev_score = np.sum(curr_u1)/np.sum(curr_u2)
+    return list(my_feats)
+
+def evaluate_feats2(X, alpha=0.05, highest_best=True):
+    """
+    X is the raw scrores
+    alpha is the level of significance
+    
+    This version uses T-test
+    
+    Returns: set of indices indicating selected features.
+    """
+    eval_order = np.argsort(X)
+    if highest_best:
+        eval_order = eval_order[::-1]
+    selected_feats = []
+    selected_idx = []
+    for idx in eval_order:
+        if len(selected_feats) == 0:
+            selected_feats.append(X[idx])
+            selected_idx.append(idx)
+            continue
+        # now continue on and decide what to do
+        mu = np.mean(selected_feats)
+        sigma = np.std(selected_feats)
+        U = len(selected_feats)
+        if sigma == 0.0 and U > 1:
+            return selected_idx
+        elif sigma == 0.0:
+            selected_feats.append(X[idx])
+            selected_idx.append(idx)
+            continue
+        
+        # otherwise compute score for T test.
+        t_stat = (mu - X[idx])/(sigma/np.sqrt(U))
+        t_alpha = stats.t.pdf(t_stat, U)
+        if t_alpha <= alpha:
+            selected_feats.append(X[idx])
+            selected_idx.append(idx)
+        else:
+            return selected_idx
+    return selected_idx
+
+def evaluate_feats(s_b, s_w, alpha=0.05):
+    set1 = evaluate_feats1(s_b,s_w)
+    eval2 = s_b/s_w
+    if len(eval2.shape) > 1:
+        eval2 = np.diag(s_b)/np.diag(s_w)
+    set2 = evaluate_feats2(eval2, alpha)
+    return list(set(set1 + set2))
 
 def entropy(X):
     mm = MinMaxScaler()
@@ -78,24 +207,22 @@ class DPPClassifier(SGDClassifier):
         self.intragroup_alpha = intragroup_alpha
         self.intergroup_thres = intergroup_thres if intergroup_thres is not None else epsilon
     
-    def _dpp_estimate_k(self, feat_dist):
+    def _dpp_estimate_k(self, L):
         """
         L is the input kernel
         """
         """
-        L = decompose_kernel(feat_dist)
-        k = 0 #len(self.coef_info['cols'])
-        N = L['D'].shape[0]
-        E = elem_sympoly(L['D'], N)
-        el_list = list(range(k+1, N+1))
-        E_ls = [E[x, -1] for x in el_list]
-        #print(E_ls)
-        E_ls = np.abs(E_ls)
-        E_ls = E_ls / (np.sum(E_ls))
-        #print(E_ls)
-        dpp_k_prime = np.random.choice(el_list, p=E_ls)
-        self.dpp_k['pca'] = dpp_k_prime
-        self.dpp_k['kpca'] = dpp_k_prime
+        pca = PCA(n_components=None)
+        pca.fit(L)
+        pca_k = np.min(np.argwhere(np.cumsum(pca.explained_variance_ratio_) > 
+                                  (1-self.intragroup_alpha)))
+        
+        # also use KernelPCA
+        kpca = KernelPCA(kernel='rbf')
+        kpca.fit(L)
+        kpca_k = np.argwhere(kpca.lambdas_ > 0.01).flatten().shape[0]
+        self.dpp_k['pca'] = pca_k
+        self.dpp_k['kpca'] = kpca_k
         """
         self.dpp_k['pca'] = None
         
@@ -136,25 +263,14 @@ class DPPClassifier(SGDClassifier):
         """
         X = np.array(X_)
         cols_to_index = [idx for idx, x in enumerate(X_.columns) if x in self.coef_info['cols']]
-        unseen_cols_to_index = [idx for idx, x in enumerate(X_.columns) if x not in self.coef_info['cols']]        
+        unseen_cols_to_index = [idx for idx, x in enumerate(X_.columns) if x not in self.coef_info['cols']]
         if X.shape[0] < 1000:
             feat_dist = rbf_kernel(X.T)
         else:
             feat_dist = Nystroem().fit_transform(X.T)
-        #feat_dist = np.nan_to_num(feat_dist)
-        unseen_kernel = feat_dist[unseen_cols_to_index, :][:, unseen_cols_to_index]
-        #print(unseen_kernel.shape)
-        self._dpp_estimate_k(unseen_kernel)
-        k = self.dpp_k['pca'] # - len(self.coef_info['cols'])
-        """
-        if k < 1:
-            # this means k is possibly negative, reevaluate k based only on new incoming feats!
-            self.unseen_only = True            
-            #k = max(self._dpp_estimate_k(unseen_kernel), int(unseen_kernel.shape[0] * 0.5)+1)            
-            k = unseen_kernel.shape[0]
-            #print("Unseen only")
-            #print(k)
-        """
+        self._dpp_estimate_k(feat_dist)
+        k = self.dpp_k['pca'] #- len(self.coef_info['cols'])
+        
         feat_index = []
         while len(feat_index) == 0:
             if len(self.coef_info['cols']) == 0:
@@ -166,6 +282,11 @@ class DPPClassifier(SGDClassifier):
         # select features using entropy measure
         # how can we order features from most to least relevant first?
         # we chould do it using f test? Or otherwise - presume DPP selects best one first
+        
+        s_b, s_w = class_separability(X, y)
+        col_sel = evaluate_feats(s_b, s_w)
+        #sel_cols = list(self.coef_info['cols']) + list(col_sel)
+        
         """
         feat_entropy = []
         excl_entropy = []
@@ -186,8 +307,6 @@ class DPPClassifier(SGDClassifier):
         # perform the sampling - we will do the single pass in the same
         # way it was approached in the OGFS
         # feat index will have all previous sampled columns as well...
-        
-        
         if not self.unseen_only:
             feat_check = []
             excl_check = []
@@ -203,7 +322,8 @@ class DPPClassifier(SGDClassifier):
                     feat_check.append(idx)
                 else:
                     excl_check.append(idx)
-            index_to_col = [col for idx, col in enumerate(X_.columns) if idx in feat_check]
+            feat_check_ = (feat_check+col_sel)
+            index_to_col = [col for idx, col in enumerate(X_.columns) if idx in feat_check_]
         else:
             # if we are considering unseen only, we will simply let the regulariser
             # act on it, sim. to grafting.
@@ -213,7 +333,7 @@ class DPPClassifier(SGDClassifier):
         col_rem = X_.columns.difference(self.coef_info['cols'])        
         # update column exclusion...
         self.coef_info['excluded_cols'] = [x for x in self.coef_info['excluded_cols'] if x not in self.coef_info['cols']]
-        self.add_column_exclusion(col_rem)
+        self.add_column_exclusion(col_rem)        
         
     def fit(self, X, y, coef_init=None, intercept_init=None,
             sample_weight=None):
