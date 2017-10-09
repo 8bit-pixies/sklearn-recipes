@@ -95,3 +95,4 @@ ENV/
 *.zip
 *.RData
 *.mat
+streaming_take2/.Rhistory
