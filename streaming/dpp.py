@@ -58,7 +58,7 @@ def rank(A, atol=1e-13, rtol=0):
 
     See also
     --------
-    numpy.linalg.matrix_rank
+    np.linalg.matrix_rank
         matrix_rank is basically the same as this function, but it does not
         provide the option of the absolute tolerance.
     """
@@ -99,7 +99,7 @@ def nullspace(A, atol=1e-13, rtol=0):
         If `A` is an array with shape (m, k), then `ns` will be an array
         with shape (k, n), where n is the estimated dimension of the
         nullspace of `A`.  The columns of `ns` are a basis for the
-        nullspace; each element in numpy.dot(A, ns) will be approximately
+        nullspace; each element in np.dot(A, ns) will be approximately
         zero.
     """
 
@@ -169,10 +169,35 @@ def decompose_kernel(M):
     """
     L = {}    
     M = np.nan_to_num(M)
+    # no approximation
     D, V  = np.linalg.eig(M)
+    
+    """
+    if M.shape[0] < 1000:        
+        D, V  = np.linalg.eig(M)
+    else:
+        # nystrom approximation for eigenvalues
+        # https://github.com/charanpald/sandbox/blob/master/sandbox/misc/Nystrom.py
+        n = 1000
+        inds = np.sort(np.random.permutation(M.shape[0])[0:n])
+        invInds = np.setdiff1d(np.arange(M.shape[0]), inds)
+
+        A = M[inds, :][:, inds]
+        B = M[inds, :][:, invInds]
+        
+        Am12 = np.linalg.inv(scipy.linalg.sqrtm(A))
+        #Am12 = Util.matrixPowerh(A, -0.5)
+        S = A + Am12.dot(B).dot(B.T).dot(Am12)
+        S = np.nan_to_num(S)
+        lmbda, U = np.linalg.eig(S)
+        Ubar = np.r_[U, B.T.dot(U).dot(np.diag(1/lmbda))]
+        Z = Ubar.dot(np.diag(lmbda**0.5))
+        D, F = np.linalg.eig(Z.T.dot(Z))
+        V = Z.dot(F).dot(np.diag(D**-0.5))
+    """
     L['M'] = M.copy()
-    L['V'] = np.real(V.copy())
-    L['D'] = np.real(D.copy())
+    L['V'] = np.real(V.copy()) + (np.ones(V.shape) * np.finfo(float).eps)
+    L['D'] = np.real(D.copy()) + (np.ones(D.shape) * np.finfo(float).eps)
     return L
 
 def sample_dpp(L=None,k=None):
@@ -197,7 +222,7 @@ def sample_dpp(L=None,k=None):
     V = L['V'][:, v]    
 
     # iterate
-    y_index = list(range(L['V'].shape[1]))
+    y_index = None #list(range(L['V'].shape[1]))
     Y=[]
     
     for _ in range(k):
@@ -216,13 +241,24 @@ def sample_dpp(L=None,k=None):
         """        
         P_index = [(indx, prob) for indx, prob in list(zip(range(len(P)), P)) if indx not in Y]
         P_list = [x for x, _ in P_index]
+        if y_index is None:
+            y_index = list(range(len(P_list)))
+        
+        if len(P_list) == 0:
+            return Y
+        
         P_norm = np.array([p for _, p in P_index])
         P_norm = P_norm/np.sum(P_norm)
         choose_item = np.random.choice(range(len(P_list)), 1, p=P_norm.flatten())
         choose_item = choose_item.flatten()[0]
         
         # add the index into our sampler
+        #print(choose_item)
+        #print(len(y_index))
+        #print(len(P_list))
+        #print("\n")
         Y.append(y_index[choose_item])
+        
         if len(Y) == k:
             return Y
         
@@ -416,25 +452,41 @@ def sample_conditional_dpp(L, set_, k=None):
     k:     size of the sample from the DPP
     '''
     # Calculate the kernel for the marginal
+    if L.shape[0] != L.shape[1]:
+        print("Whaaaatt???")
+        print(L)
+        print(L.shape)
+        sq_size = max(L.shape[0], L.shape[1])
+        L_temp1 = np.zeros(size=(sq_size, sq_size))
+        L_temp1[:L.shape[0], :L.shape[1]] = L
+        L_temp2 = np.zeros(size=(sq_size, sq_size))
+        L_temp2[:L.shape[1], :L.shape[0]] = L.T
+        L = np.maximum(L_temp1, L_temp2)
     Id = np.array([1]*L.shape[0])
     Id[set_] = 0
-    Id = np.diag(Id)    
+    Id = np.diag(Id)
     try:
         L_compset_full = np.linalg.inv(Id + L)
     except:
         try:
             L_compset_full = np.linalg.pinv(Id + L)
         except:
+            print("using octave...")
+            from oct2py import octave
             temp_L = Id + L
             L_compset_full = octave.pinv(temp_L)
+            octave.exit()
     try:
         L_minor = np.linalg.inv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
     except:
         try:
             L_minor = np.linalg.pinv(np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0))
         except:
+            print("using octave...")
             temp_L = np.delete(np.delete(L_compset_full,tuple(set_), axis=1),tuple(set_),axis=0)
+            from oct2py import octave
             L_minor = octave.pinv(temp_L)
+            octave.exit()
     L_compset = L_minor - np.diag([1]*L_minor.shape[0])
     
     # Compute the sample

@@ -14,9 +14,27 @@ from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.decomposition import PCA, KernelPCA
 from sklearn.kernel_approximation import Nystroem
 from dpp import sample_dpp, decompose_kernel, sample_conditional_dpp
+from sklearn.preprocessing import normalize
+import warnings
+
+from sklearn import preprocessing
+from sklearn.kernel_approximation import Nystroem
+from sklearn.metrics.pairwise import pairwise_kernels
+import numpy as np
 
 import random
 from collections import Counter
+
+def fast_cov(X):
+    # assume...correlation and covariant are interchangeable...
+    X_scaled = preprocessing.scale(X)
+    #X_approx_cor = pairwise_kernels(X_scaled.T, metric='cosine')
+    X_approx_cor = Nystroem("cosine").fit_transform(X_scaled.T)
+    X_cor = X_approx_cor.dot(X_approx_cor.T)
+    X_var = np.var(X_approx_cor, axis=1)*X_approx_cor.shape[1]
+    X_cov = np.multiply(np.multiply(X_cor, X_var.reshape(-1, 1)), X_var.reshape(1, -1))
+    return X_cov
+
 
 def class_separability(X, y, mode='mitra'):
     """
@@ -29,10 +47,12 @@ def class_separability(X, y, mode='mitra'):
     for class_ in prior_proba.keys():
         mask = y==class_
         X_sel = X[mask, :]
-        cov_sig = np.cov(X_sel.T)
+        if X_sel.shape[1] < 1000:
+            cov_sig = np.cov(X_sel.T)
+        else:
+            cov_sig = fast_cov(X_sel)
         s_w.append(cov_sig * prior_proba[class_])
     s_w = np.atleast_2d(np.add(*s_w))
-    
     
     s_b = []
     m_o = np.mean(X, axis=0).reshape(-1, 1)
@@ -166,8 +186,10 @@ def wilcoxon_group(X, f):
     similar to OGFS?
     """
     # X is a matrix, f is a single vector
+    X = normalize(X)
+    f = normalize(f.reshape(-1, 1)).flatten()
     if len(X.shape) == 1:
-        return wilcoxon(X, f).pvalue
+        return wilcoxon(X, f, zero_method='zsplit').pvalue
     # now we shall perform and check each one...and return only the lowest pvalue
     return np.max([wilcoxon(x, f) for x in X.T])
 
@@ -211,7 +233,6 @@ class DPPClassifier(SGDClassifier):
         """
         L is the input kernel
         """
-        """
         pca = PCA(n_components=None)
         pca.fit(L)
         pca_k = np.min(np.argwhere(np.cumsum(pca.explained_variance_ratio_) > 
@@ -223,8 +244,6 @@ class DPPClassifier(SGDClassifier):
         kpca_k = np.argwhere(kpca.lambdas_ > 0.01).flatten().shape[0]
         self.dpp_k['pca'] = pca_k
         self.dpp_k['kpca'] = kpca_k
-        """
-        self.dpp_k['pca'] = None
         
     def add_column_exclusion(self, cols):
         self.coef_info['excluded_cols'] = list(self.coef_info['excluded_cols']) + list(cols)
@@ -261,35 +280,40 @@ class DPPClassifier(SGDClassifier):
         
         After sampling it will go ahead and then perform grouped wilcoxon selection.
         """
-        if X_.shape[0] > 1500:
-            X = np.array(X_)[np.random.choice(range(X_.shape[0]), 1100), :]
-        else:
-            X = np.array(X_)
-        print(X.shape)
+        X = np.array(X_)
         cols_to_index = [idx for idx, x in enumerate(X_.columns) if x in self.coef_info['cols']]
         unseen_cols_to_index = [idx for idx, x in enumerate(X_.columns) if x not in self.coef_info['cols']]
-        if X.shape[0] < 1000 or X.shape[1] < 100:
+        feat_dist = rbf_kernel(X.T)
+        
+        if X.shape[1] < 1000:
             feat_dist = rbf_kernel(X.T)
         else:
             feat_dist = Nystroem().fit_transform(X.T)
-        self._dpp_estimate_k(feat_dist)
-        #k = self.dpp_k['pca'] #- len(self.coef_info['cols'])
-        k = None
+            feat_dist = feat_dist.dot(feat_dist.T)
         
-        feat_index = []
-        #while len(feat_index) == 0:
+        self._dpp_estimate_k(feat_dist)
+        k_prime = self.dpp_k['pca'] - len(self.coef_info['cols'])
+        k = None
+        print("\tSampling DPP...")
         if len(self.coef_info['cols']) == 0:
             feat_index = sample_dpp(decompose_kernel(feat_dist), k=k)
+            feat_index = [x for x in feat_index if x is not None]
+            if len(feat_index) == 0:
+                feat_index = sample_dpp(decompose_kernel(feat_dist), k=k_prime)
         else:            
             feat_index = sample_conditional_dpp(feat_dist, cols_to_index, k=k)
-        feat_index = [x for x in feat_index if x is not None]
-        
+            feat_index = [x for x in feat_index if x is not None]
+            if len(feat_index) == 0:
+                feat_index = sample_conditional_dpp(feat_dist, cols_to_index, k=k_prime)
+        print("\tSampling DPP Done!")
         # select features using entropy measure
         # how can we order features from most to least relevant first?
         # we chould do it using f test? Or otherwise - presume DPP selects best one first
         
+        print("\tCalculating separability (covariance matrix)...")
         s_b, s_w = class_separability(X, y)
         col_sel = evaluate_feats(s_b, s_w)
+        print("\tCalculating separability Done!")
         #sel_cols = list(self.coef_info['cols']) + list(col_sel)
         
         """
@@ -312,7 +336,8 @@ class DPPClassifier(SGDClassifier):
         # perform the sampling - we will do the single pass in the same
         # way it was approached in the OGFS
         # feat index will have all previous sampled columns as well...
-        if not self.unseen_only and len(feat_index) > 0:
+        print("\tWilcoxon stats...")
+        if not self.unseen_only:
             feat_check = []
             excl_check = []
             X_sel = X[:, feat_index]
@@ -329,14 +354,11 @@ class DPPClassifier(SGDClassifier):
                     excl_check.append(idx)
             feat_check_ = (feat_check+col_sel)
             index_to_col = [col for idx, col in enumerate(X_.columns) if idx in feat_check_]
-        elif self.unseen_only:
+        else:
             # if we are considering unseen only, we will simply let the regulariser
             # act on it, sim. to grafting.
             index_to_col = [col for idx, col in enumerate(X_.columns) if idx in feat_index]
-        else:
-            # only use supervised criteria
-            feat_check_ = (feat_check+col_sel)
-            index_to_col = [col for idx, col in enumerate(X_.columns) if idx in feat_index]
+        print("\tWilcoxon stats Done!")
         self.unseen_only = False # perhaps add more conditions around unseen - i.e. once unseen condition kicks in, it remains active?
         self.coef_info['cols'] = list(set(self.coef_info['cols'] + index_to_col))
         col_rem = X_.columns.difference(self.coef_info['cols'])        
@@ -360,6 +382,7 @@ class DPPClassifier(SGDClassifier):
     
     def partial_fit(self, X, y, sample_weight=None):
         X_ = X.copy()
+        print(X.shape)
         unseen_col_size = len([1 for x in X.columns if x not in self.seen_cols])
         self.seen_cols = list(set(self.seen_cols + X.columns.tolist()))
         #sample_from_exclude_size = int(len(self.coef_info['excluded_cols']) - (len(self.coef_info['cols'])/2.0))+1
