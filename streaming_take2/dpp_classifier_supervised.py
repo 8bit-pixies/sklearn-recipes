@@ -32,6 +32,8 @@ def class_separability(X, y, mode='mitra'):
     """
     Calculates the class separability based on the mitra paper    
     """    
+    from ogfs_classifier import spec_supervised
+    return spec_supervised(X, y)
     # get prior probs
     prior_proba = Counter(y)
     
