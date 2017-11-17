@@ -283,7 +283,9 @@ class DPPClassifier(SGDClassifier):
         cols_to_index = [idx for idx, x in enumerate(X_.columns) if x in self.coef_info['cols']]
         unseen_cols_to_index = [idx for idx, x in enumerate(X_.columns) if x not in self.coef_info['cols']]
         if X.shape[0] < 1000 or X.shape[1] < 100:
-            feat_dist = rbf_kernel(X.T)
+            #feat_dist = rbf_kernel(X.T)
+            feat_dist = Nystroem().fit_transform(X.T)
+            feat_dist = feat_dist.dot(feat_dist.T)
         else:
             feat_dist = Nystroem().fit_transform(X.T)
             feat_dist = feat_dist.dot(feat_dist.T)
